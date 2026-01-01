@@ -1,0 +1,5 @@
+{
+  "name": "Cymatics: Sound Geometry",
+  "description": "An interactive simulation of Chladni figures demonstrating how sound waves create geometry through constructive and destructive interference on a vibrating plate.",
+  "requestFramePermissions": []
+}
