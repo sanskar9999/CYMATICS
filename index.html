@@ -15,20 +15,524 @@
         overflow: hidden;
       }
     </style>
-  <script type="importmap">
+    <!-- Import Map for Module Resolution -->
+    <script type="importmap">
 {
   "imports": {
-    "react": "https://esm.sh/react@^19.2.3",
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+    "lucide-react": "https://esm.sh/lucide-react@0.263.1?deps=react@18.2.0",
     "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "lucide-react": "https://esm.sh/lucide-react@^0.562.0"
+    "react/": "https://esm.sh/react@^19.2.3/"
   }
 }
 </script>
-<link rel="stylesheet" href="/index.css">
-</head>
+    <!-- Babel for in-browser compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
   <body>
     <div id="root"></div>
-  <script type="module" src="/index.tsx"></script>
-</body>
+
+    <script type="text/babel" data-type="module">
+      import React, { useState, useEffect, useRef, useCallback } from 'react';
+      import ReactDOM from 'react-dom/client';
+      import { Waves, Volume2, VolumeX, Eye, EyeOff, PlayCircle, PauseCircle, Disc, Square } from 'lucide-react';
+
+      // --- TYPES ---
+      
+      const MODES = {
+        CHLADNI: 'chladni',
+        CIRCULAR: 'circular'
+      };
+
+      // --- AUDIO UTILS ---
+      
+      let audioContext = null;
+      let oscillator = null;
+      let gainNode = null;
+
+      const initAudio = () => {
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          gainNode = audioContext.createGain();
+          gainNode.connect(audioContext.destination);
+          gainNode.gain.value = 0; 
+        }
+      };
+
+      const playTone = (m, n, volume, mode) => {
+        if (!audioContext || !gainNode) initAudio();
+        if (!audioContext || !gainNode) return;
+        if (audioContext.state === 'suspended') audioContext.resume();
+
+        let targetFreq = 100;
+        
+        if (mode === MODES.CHLADNI) {
+          // Square Plate: f ~ m^2 + n^2
+          targetFreq = 100 + (Math.pow(m, 2) + Math.pow(n, 2)) * 15;
+        } else {
+          // Circular Plate: f roughly ~ (m + 2n)^2 for nice harmonics
+          // m = radial rings, n = diameters
+          targetFreq = 100 + Math.pow(m * 1.5 + n, 2) * 8;
+        }
+
+        // Clamp frequency
+        const clampedFreq = Math.min(Math.max(targetFreq, 60), 2000);
+
+        if (!oscillator) {
+          oscillator = audioContext.createOscillator();
+          oscillator.type = 'sine';
+          oscillator.frequency.value = clampedFreq;
+          oscillator.connect(gainNode);
+          oscillator.start();
+        } else {
+          oscillator.frequency.setTargetAtTime(clampedFreq, audioContext.currentTime, 0.1);
+        }
+
+        gainNode.gain.setTargetAtTime(volume * 0.1, audioContext.currentTime, 0.1);
+      };
+
+      const stopTone = () => {
+        if (gainNode && audioContext) {
+          gainNode.gain.setTargetAtTime(0, audioContext.currentTime, 0.1);
+        }
+      };
+
+      // --- COMPONENTS ---
+
+      const SimulationCanvas = ({ params, showField }) => {
+        const canvasRef = useRef(null);
+        const requestRef = useRef();
+        const particlesRef = useRef([]);
+        
+        // Initialize particles
+        useEffect(() => {
+          if (particlesRef.current.length !== params.particleCount) {
+            const particles = [];
+            for (let i = 0; i < params.particleCount; i++) {
+              particles.push({
+                x: Math.random(),
+                y: Math.random(),
+                vx: 0,
+                vy: 0
+              });
+            }
+            particlesRef.current = particles;
+          }
+        }, [params.particleCount]);
+
+        const animate = useCallback(() => {
+          const canvas = canvasRef.current;
+          if (!canvas) return;
+          const ctx = canvas.getContext('2d', { alpha: false });
+          if (!ctx) return;
+
+          const width = canvas.width;
+          const height = canvas.height;
+          
+          const scale = Math.min(width, height);
+          const offsetX = (width - scale) / 2;
+          const offsetY = (height - scale) / 2;
+
+          // 1. Background
+          ctx.fillStyle = '#1e293b'; 
+          ctx.fillRect(0, 0, width, height);
+          
+          // Plate Background
+          ctx.fillStyle = '#0f172a';
+          if (params.mode === MODES.CIRCULAR) {
+             // Draw circular plate background
+             ctx.beginPath();
+             ctx.arc(width/2, height/2, scale/2, 0, Math.PI * 2);
+             ctx.fill();
+          } else {
+             // Square plate
+             ctx.fillRect(offsetX, offsetY, scale, scale);
+          }
+
+          // 2. Field Visualization
+          if (showField) {
+            const fieldRes = 80; // Optimized resolution
+            const cellW = scale / fieldRes;
+            const cellH = scale / fieldRes;
+            
+            for (let i = 0; i < fieldRes; i++) {
+              for (let j = 0; j < fieldRes; j++) {
+                const x = i / fieldRes;
+                const y = j / fieldRes;
+                
+                // Normalized -1 to 1
+                const nx = x * 2 - 1;
+                const ny = y * 2 - 1;
+                
+                let val = 0;
+                let inside = true;
+
+                if (params.mode === MODES.CHLADNI) {
+                   val = Math.cos(params.frequencyN * Math.PI * nx) * Math.cos(params.frequencyM * Math.PI * ny) -
+                         Math.cos(params.frequencyM * Math.PI * nx) * Math.cos(params.frequencyN * Math.PI * ny);
+                } else {
+                   // Circular Plate Logic
+                   const r = Math.sqrt(nx*nx + ny*ny);
+                   const theta = Math.atan2(ny, nx);
+                   if (r > 1) {
+                     inside = false;
+                   } else {
+                     // Bessel-like approximation: sin(radial) * cos(angular)
+                     // params.frequencyM controls Rings (radial)
+                     // params.frequencyN controls Spokes (angular)
+                     val = Math.sin(params.frequencyM * Math.PI * r) * Math.cos(params.frequencyN * theta);
+                   }
+                }
+
+                if (inside) {
+                    const intensity = Math.abs(val);
+                    if (intensity < 0.1) {
+                       ctx.fillStyle = `rgba(74, 222, 128, 0.3)`; 
+                       ctx.fillRect(offsetX + i * cellW, offsetY + j * cellH, cellW, cellH);
+                    } else {
+                       const redAlpha = Math.min(intensity * 0.2, 0.5);
+                       ctx.fillStyle = `rgba(239, 68, 68, ${redAlpha})`;
+                       ctx.fillRect(offsetX + i * cellW, offsetY + j * cellH, cellW, cellH);
+                    }
+                }
+              }
+            }
+          }
+
+          // 3. Particles
+          ctx.fillStyle = '#4ade80'; // Green sand
+          const particleSize = 1.2; 
+
+          const PI = Math.PI;
+          const M_PI = params.frequencyM * PI;
+          const N_PI = params.frequencyN * PI;
+
+          const normalizedAmp = params.amplitude / 100;
+          const maxMove = 0.02; 
+          const vibrationStrength = normalizedAmp * normalizedAmp * maxMove;
+
+          particlesRef.current.forEach(p => {
+              const nx = p.x * 2 - 1;
+              const ny = p.y * 2 - 1;
+              let amplitude = 0;
+              let inside = true;
+
+              if (params.mode === MODES.CHLADNI) {
+                  amplitude = Math.cos(N_PI * nx) * Math.cos(M_PI * ny) - 
+                              Math.cos(M_PI * nx) * Math.cos(N_PI * ny);
+              } else {
+                  const r = Math.sqrt(nx*nx + ny*ny);
+                  // Clamp r to 1 for calculation, effectively treating corners as edge?
+                  // Or just calculate pure polar
+                  const theta = Math.atan2(ny, nx);
+                  
+                  // Circular Physics
+                  // M = Rings, N = Diameters
+                  amplitude = Math.sin(M_PI * r) * Math.cos(N_PI * theta);
+              }
+
+              const shake = Math.abs(amplitude) * vibrationStrength;
+              
+              // Move
+              p.x += (Math.random() - 0.5) * shake;
+              p.y += (Math.random() - 0.5) * shake;
+
+              // Respawn Logic
+              let respawn = false;
+              if (params.mode === MODES.CHLADNI) {
+                 if (p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) respawn = true;
+              } else {
+                 // Circular boundary check
+                 const d2 = (p.x - 0.5)**2 + (p.y - 0.5)**2;
+                 // 0.25 is radius squared (0.5^2)
+                 if (d2 > 0.25) respawn = true;
+              }
+
+              if (respawn) {
+                 if (params.mode === MODES.CHLADNI) {
+                    p.x = Math.random();
+                    p.y = Math.random();
+                 } else {
+                    // Spawn inside circle
+                    const a = Math.random() * 2 * Math.PI;
+                    const r = Math.sqrt(Math.random()) * 0.5; // sqrt for uniform area
+                    p.x = 0.5 + r * Math.cos(a);
+                    p.y = 0.5 + r * Math.sin(a);
+                 }
+              }
+
+              const screenX = offsetX + p.x * scale;
+              const screenY = offsetY + p.y * scale;
+              
+              ctx.fillRect(screenX, screenY, particleSize, particleSize);
+          });
+
+          requestRef.current = requestAnimationFrame(animate);
+        }, [params, showField]);
+
+        useEffect(() => {
+          const handleResize = () => {
+            if (canvasRef.current && canvasRef.current.parentElement) {
+              canvasRef.current.width = canvasRef.current.parentElement.clientWidth;
+              canvasRef.current.height = canvasRef.current.parentElement.clientHeight;
+            }
+          };
+          window.addEventListener('resize', handleResize);
+          handleResize(); 
+          requestRef.current = requestAnimationFrame(animate);
+          return () => {
+            window.removeEventListener('resize', handleResize);
+            if (requestRef.current) cancelAnimationFrame(requestRef.current);
+          };
+        }, [animate]);
+
+        return (
+          <div className="w-full h-full bg-slate-900 rounded-lg overflow-hidden shadow-2xl relative">
+             <canvas ref={canvasRef} className="block w-full h-full" />
+             <div className="absolute top-4 left-4 pointer-events-none mix-blend-difference">
+                <div className="text-white/30 text-4xl font-black tracking-widest uppercase">
+                  Cymatics
+                </div>
+             </div>
+          </div>
+        );
+      };
+
+      const Controls = ({ 
+        params, setParams, 
+        showField, setShowField,
+        isAudioOn, setIsAudioOn,
+        isAutoMode, setIsAutoMode
+      }) => {
+        
+        const handleChange = (key, value) => {
+          if ((key === 'frequencyM' || key === 'frequencyN') && isAutoMode) {
+              setIsAutoMode(false);
+          }
+          setParams(prev => ({ ...prev, [key]: value }));
+        };
+
+        return (
+          <div className="w-full md:w-80 bg-slate-900/90 backdrop-blur-md border-l border-slate-700 p-6 flex flex-col gap-6 h-full overflow-y-auto">
+            <div className="space-y-2">
+              <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                <Waves className="w-5 h-5 text-green-400" />
+                Wave Controls
+              </h2>
+              <p className="text-xs text-slate-400">
+                Visualize how sound waves create geometry through resonance.
+              </p>
+            </div>
+
+            {/* Mode Selection */}
+            <div className="bg-slate-800 p-1 rounded-lg flex text-xs font-semibold">
+              <button 
+                onClick={() => handleChange('mode', MODES.CHLADNI)}
+                className={`flex-1 py-2 px-2 rounded-md transition-colors flex items-center justify-center gap-2 ${params.mode === MODES.CHLADNI ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
+              >
+                <Square className="w-3 h-3" /> Square
+              </button>
+              <button 
+                onClick={() => handleChange('mode', MODES.CIRCULAR)}
+                className={`flex-1 py-2 px-2 rounded-md transition-colors flex items-center justify-center gap-2 ${params.mode === MODES.CIRCULAR ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
+              >
+                <Disc className="w-3 h-3" /> Circular
+              </button>
+            </div>
+
+            <div className="relative pt-2">
+              <div className="flex items-center justify-between mb-4">
+                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Frequencies</span>
+                  <button 
+                      onClick={() => setIsAutoMode(!isAutoMode)}
+                      className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold transition-all ${isAutoMode ? 'bg-green-500 text-white animate-pulse' : 'bg-slate-700 text-slate-400'}`}
+                  >
+                      {isAutoMode ? <PlayCircle className="w-3 h-3" /> : <PauseCircle className="w-3 h-3" />}
+                      AUTO
+                  </button>
+              </div>
+
+              <div className="space-y-6">
+                  {/* Frequency N */}
+                  <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                      <span className="text-slate-300">
+                        {params.mode === MODES.CIRCULAR ? 'Diameter Nodes (N)' : 'Frequency N'}
+                      </span>
+                      <span className="font-mono text-green-400">{params.frequencyN.toFixed(2)}</span>
+                  </div>
+                  <input 
+                      type="range" 
+                      min="1" 
+                      max="20" 
+                      step="0.01"
+                      value={params.frequencyN} 
+                      onChange={(e) => handleChange('frequencyN', parseFloat(e.target.value))}
+                      className={`w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer ${isAutoMode ? 'opacity-50' : 'accent-green-400'}`}
+                  />
+                  </div>
+
+                  {/* Frequency M */}
+                  <div className="space-y-2">
+                  <div className="flex justify-between text-sm">
+                      <span className="text-slate-300">
+                         {params.mode === MODES.CIRCULAR ? 'Radial Rings (M)' : 'Frequency M'}
+                      </span>
+                      <span className="font-mono text-green-400">{params.frequencyM.toFixed(2)}</span>
+                  </div>
+                  <input 
+                      type="range" 
+                      min="1" 
+                      max="20" 
+                      step="0.01"
+                      value={params.frequencyM} 
+                      onChange={(e) => handleChange('frequencyM', parseFloat(e.target.value))}
+                      className={`w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer ${isAutoMode ? 'opacity-50' : 'accent-green-400'}`}
+                  />
+                  </div>
+              </div>
+            </div>
+
+            <hr className="border-slate-800" />
+
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-300">Vibration Strength</span>
+                <span className="font-mono text-indigo-400">{Math.round(params.amplitude)}%</span>
+              </div>
+              <input 
+                type="range" 
+                min="0" 
+                max="100" 
+                step="1"
+                value={params.amplitude} 
+                onChange={(e) => handleChange('amplitude', parseFloat(e.target.value))}
+                className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-300">Sand Amount</span>
+                <span className="font-mono text-slate-400">{params.particleCount}</span>
+              </div>
+              <input 
+                type="range" 
+                min="1000" 
+                max="50000" 
+                step="1000"
+                value={params.particleCount} 
+                onChange={(e) => handleChange('particleCount', parseInt(e.target.value))}
+                className="w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-slate-500"
+              />
+            </div>
+
+            <hr className="border-slate-700" />
+
+            <div className="grid grid-cols-2 gap-3">
+              <button 
+                onClick={() => setShowField(!showField)}
+                className={`flex items-center justify-center gap-2 py-3 px-4 rounded-lg text-sm font-semibold transition-all ${showField ? 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/50' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+              >
+                {showField ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
+                {showField ? 'Hide Force' : 'See Force'}
+              </button>
+
+              <button 
+                onClick={() => setIsAudioOn(!isAudioOn)}
+                className={`flex items-center justify-center gap-2 py-3 px-4 rounded-lg text-sm font-semibold transition-all ${isAudioOn ? 'bg-pink-600/20 text-pink-400 border border-pink-500/50' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
+              >
+                {isAudioOn ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                {isAudioOn ? 'Sound On' : 'Mute'}
+              </button>
+            </div>
+            
+            <div className="mt-auto pt-4 text-xs text-slate-500 leading-relaxed">
+               Try switching modes to see how boundary conditions (Square vs Circular) change the harmonic geometry.
+            </div>
+          </div>
+        );
+      };
+
+      const App = () => {
+        const [params, setParams] = useState({
+          frequencyM: 1,
+          frequencyN: 1,
+          amplitude: 100,
+          speed: 1,
+          resolution: 1,
+          particleCount: 30000,
+          damping: 0.95,
+          mode: MODES.CHLADNI
+        });
+
+        const [showField, setShowField] = useState(false);
+        const [isAudioOn, setIsAudioOn] = useState(true);
+        const [isAutoMode, setIsAutoMode] = useState(true);
+        const timeRef = useRef(0);
+
+        useEffect(() => {
+          if (isAudioOn && params.amplitude > 0) {
+            const normalizedAmp = params.amplitude / 100;
+            const volume = normalizedAmp * 0.15;
+            playTone(params.frequencyM, params.frequencyN, volume, params.mode);
+          } else {
+            stopTone();
+          }
+        }, [params.frequencyM, params.frequencyN, params.amplitude, params.mode, isAudioOn]);
+
+        useEffect(() => {
+          if (!isAutoMode) return;
+          let animationFrame;
+          let lastTime = performance.now();
+
+          const animate = (currentTime) => {
+            const dt = (currentTime - lastTime) / 1000;
+            lastTime = currentTime;
+            timeRef.current += dt * 0.2; 
+            const t = timeRef.current;
+            
+            // Smooth Sine Wave Oscillation
+            // We oscillate N primarily, drift M slowly.
+            const nVal = 10.5 - 9.5 * Math.cos(t);
+            const mVal = 1 + (t / (2 * Math.PI)) % 19; 
+
+            setParams(prev => ({
+              ...prev,
+              frequencyN: Math.max(1, Math.min(20, nVal)),
+              frequencyM: Math.max(1, Math.min(20, mVal))
+            }));
+
+            animationFrame = requestAnimationFrame(animate);
+          };
+
+          animationFrame = requestAnimationFrame(animate);
+          return () => cancelAnimationFrame(animationFrame);
+        }, [isAutoMode]);
+
+        return (
+          <div className="flex flex-col md:flex-row h-screen w-full bg-slate-950 text-white overflow-hidden">
+            <div className="flex-1 relative order-2 md:order-1 h-[60vh] md:h-full p-4 md:p-6 flex flex-col items-center justify-center">
+              <SimulationCanvas params={params} showField={showField} />
+              <div className="md:hidden absolute bottom-6 text-xs text-slate-500 bg-slate-900/80 px-3 py-1 rounded-full backdrop-blur">
+                Scroll down for controls
+              </div>
+            </div>
+            <div className="order-1 md:order-2 h-[40vh] md:h-full w-full md:w-auto z-10 shadow-2xl">
+              <Controls 
+                params={params} setParams={setParams}
+                showField={showField} setShowField={setShowField}
+                isAudioOn={isAudioOn} setIsAudioOn={setIsAudioOn}
+                isAutoMode={isAutoMode} setIsAutoMode={setIsAutoMode}
+              />
+            </div>
+          </div>
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById('root'));
+      root.render(<App />);
+    </script>
+  </body>
 </html>
